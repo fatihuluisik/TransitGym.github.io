@@ -24,6 +24,7 @@ parser.add_argument("--weight", type=int, default=2)  # weight for action penalt
 parser.add_argument("--control", type=int,
                     default=2)  # 0 for no control;  1 for FH; 2 for RL (ddpg, maddpg)
 parser.add_argument("--share_scale", type=int, default=1)  # 0 non-share, 1 route-share
+parser.add_argument("--H_max", type=float, default=900.)  # caac_safe: max forward headway (sec)
 
 args = parser.parse_args()
 
@@ -33,7 +34,8 @@ if args.model == 'ddpg':
     from model.DDPG import Agent
 if args.model == 'maddpg':
     from model.MADDPG import Agent
-
+if args.model == 'caac_safe': 
+    from model.CAAC_Safe import Agent
 
 
 def train(args):
@@ -58,16 +60,24 @@ def train(args):
         # non share
         if args.share_scale == 0:
             for k, v in eng.bus_list.items():
-                agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
-                              seed=args.seed)
+                if args.model == 'caac_safe':
+                    agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
+                                  seed=args.seed, H_max=args.H_max)
+                else:
+                    agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
+                                  seed=args.seed)
                 agents[k] = agent
 
         # share in route
         if args.share_scale == 1:
             agents = {}
             for k, v in eng.route_list.items():
-                agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
-                              seed=args.seed)
+                if args.model == 'caac_safe':
+                    agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
+                                  seed=args.seed, H_max=args.H_max)
+                else:
+                    agent = Agent(state_dim=state_dim, name='', n_stops=len(bus_stop_list), buslist=bus_list,
+                                  seed=args.seed)
                 agents[k] = agent
     for ep in range(args.episode):
         stop_list_ = copy.deepcopy(stop_list)
@@ -124,6 +134,33 @@ def train(args):
         log = eng.cal_statistic(
             name=str(args.para_flag) + str('_') + str(args.share_scale) + str('_') + str(args.model) + str('_'),
             train=args.train)
+
+        # --- comparison logging: AWT / AHD / AOD / bunching + empirical
+        #     reach-avoid safety (did forward headway ever exceed H_max?) ---
+        try:
+            awt_ep = float(np.mean(log['wait_cost'])) if len(log['wait_cost']) > 0 else 0.
+            ahd_ep = float(np.mean(log['hold_cost'])) if len(log['hold_cost']) > 0 else 0.
+            aod_ep = float(log['AOD'])
+            bunching_ep = int(log['bunching'])
+
+            fh_series = list(eng.fh_record)  # raw, unsaturated forward headway (sec)
+            max_fh_ep = float(np.max(fh_series)) if len(fh_series) > 0 else 0.
+            violation_rate_ep = float(np.mean([1. if fh >= args.H_max else 0. for fh in fh_series])) \
+                if len(fh_series) > 0 else 0.
+            safe_ep = int(max_fh_ep < args.H_max)
+
+            csv_path = os.path.abspath(os.path.dirname(__file__)) + "/log/comparison_metrics.csv"
+            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            write_header = not os.path.exists(csv_path)
+            with open(csv_path, 'a') as f:
+                if write_header:
+                    f.write("model,seed,H_max,episode,AWT,AHD,AOD,bunching,max_fh,violation_rate,safe_episode\n")
+                f.write("%s,%d,%.1f,%d,%.4f,%.4f,%.4f,%d,%.2f,%.4f,%d\n" % (
+                    args.model, args.seed, args.H_max, ep, awt_ep, ahd_ep, aod_ep, bunching_ep,
+                    max_fh_ep, violation_rate_ep, safe_ep))
+        except Exception as e:
+            print("comparison logging failed at ep %d: %s" % (ep, str(e)))
+
         abspath = os.path.abspath(os.path.dirname(__file__))
         name = abspath + "/log/" + args.data + args.model
 

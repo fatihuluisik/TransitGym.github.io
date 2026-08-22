@@ -66,6 +66,7 @@ class Engine():
         self.action_record = []
         self.reward_record = []
         self.state_record = []
+        self.fh_record = []  # raw (unsaturated) forward headway, seconds -- for safety-metric logging
 
     def cal_statistic(self,name,train=1):
         print('total pax:%d'%(len(self.pax_list)))
@@ -101,12 +102,16 @@ class Engine():
             tt = [ ]
             for k,v in bus.stay.items():
                 if v>0:
-                    tt.append(bus.hold_cost[k])
-                    hold_cost.append(bus.hold_cost[k])
+                    # bus.hold_cost[k] can be a plain float or a 1-element numpy
+                    # array (depending on the model's raw action output); coerce
+                    # to a clean scalar here so downstream lists stay homogeneous.
+                    hc = float(np.asarray(bus.hold_cost[k]).reshape(-1)[0])
+                    tt.append(hc)
+                    hold_cost.append(hc)
                     if k in stop_wise_hold:
-                        stop_wise_hold[k].append(bus.hold_cost[k])
+                        stop_wise_hold[k].append(hc)
                     else:
-                        stop_wise_hold[k] = [bus.hold_cost[k]]
+                        stop_wise_hold[k] = [hc]
 
         stop_wise_wait_order = []
         stop_wise_hold_order = []
@@ -151,7 +156,10 @@ class Engine():
         AHD = []
         AOD = []
         for k in bus.pass_stop:
-            AHD.append(np.mean(stop_wise_hold[k]))
+            try:
+                AHD.append(np.mean(stop_wise_hold[k]))
+            except:
+                AHD.append(0.)
             try:
                 if math.isnan(np.var(self.busstop_list[k].arr_bus_load) / np.mean(self.busstop_list[k].arr_bus_load)):
                     AOD.append(0)
@@ -370,6 +378,7 @@ class Engine():
 
         fh, bh = self.cal_headway(bus)
         var, mean = self.route_info(bus)
+        self.fh_record.append(fh)  # raw, unsaturated (for safety-metric logging)
         state += [min(fh / 600., 2.), min(bh / 600., 2.)]
 
         self.state_record.append(state)
